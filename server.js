@@ -56,10 +56,9 @@ function verifyCassoSignature(rawBody, signatureHeader, secret) {
 
 // ===== Middleware chung =====
 app.use(cors());
-app.use(express.json()); // dùng cho API khác (create-order, order/:code)
 
 // ===== API tạo đơn (ghi vào Google Sheet) =====
-app.post("/create-order", async (req, res) => {
+app.post("/create-order", express.json(), async (req, res) => {
   try {
     const { uid, amount } = req.body;
     if (!uid || !amount) return res.status(400).json({ error: "Thiếu uid hoặc amount" });
@@ -122,7 +121,11 @@ app.post("/create-order", async (req, res) => {
 // ===== Webhook V2 =====
 app.post(
   "/casso-webhook",
-  express.json({ verify: (req, res, buf) => { req.rawBody = buf.toString("utf8"); } }),
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf.toString("utf8"); // giữ nguyên body gốc
+    }
+  }),
   async (req, res) => {
     try {
       const signature = req.get("X-Casso-Signature") || "";
@@ -187,7 +190,7 @@ app.post(
 );
 
 // ===== Xem trạng thái đơn =====
-app.get("/order/:orderCode", async (req, res) => {
+app.get("/order/:orderCode", express.json(), async (req, res) => {
   try {
     const code = req.params.orderCode.replace("MEOSTORE-", "");
     const get = await sheets.spreadsheets.values.get({
@@ -209,4 +212,3 @@ app.get("/order/:orderCode", async (req, res) => {
 server.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
-
