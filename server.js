@@ -31,13 +31,12 @@ async function initSheets() {
   console.log("✅ Google Sheets ready");
 })();
 
-// ===== Verify chữ ký Webhook V2 =====
 function verifyCassoSignature(rawBody, signatureHeader, secret) {
   if (process.env.NODE_ENV === "development") return true;
   if (!signatureHeader || !secret) return false;
 
   const parts = Object.fromEntries(
-    signatureHeader.split(",").map(seg => {
+    signatureHeader.split(",").map((seg) => {
       const [k, v] = seg.split("=");
       return [k.trim(), v.trim()];
     })
@@ -49,17 +48,22 @@ function verifyCassoSignature(rawBody, signatureHeader, secret) {
   const signedPayload = `${t}.${rawBody}`;
   const hmac = crypto.createHmac("sha512", secret).update(signedPayload).digest("hex");
 
+  // 🔍 Debug log
   console.log("🔍 Verify Debug:", {
     t,
     v1,
     v1_len: v1.length,
     hmac,
     hmac_len: hmac.length,
-    secret_len: secret.length,
+    secret_env_len: (process.env.CASSO_SECRET || "").length,
+    secret_env_preview: (process.env.CASSO_SECRET || "").slice(0, 4) + "..." + (process.env.CASSO_SECRET || "").slice(-4),
+    secret_used_len: secret.length,
+    secret_used_preview: secret.slice(0, 4) + "..." + secret.slice(-4),
   });
 
   return hmac === v1;
 }
+
 
 // ===== Middleware chung =====
 app.use(cors());
@@ -224,3 +228,4 @@ app.get("/order/:orderCode", express.json(), async (req, res) => {
 server.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
+
