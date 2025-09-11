@@ -47,7 +47,7 @@ function verifyCassoSignature(rawBody, signatureHeader, secret) {
   if (!t || !v1) return false;
 
   const signedPayload = `${t}.${rawBody}`;
-  const hmac = crypto.createHmac("sha256", secret).update(signedPayload).digest("hex");
+  const hmac = crypto.createHmac("sha512", secret).update(signedPayload).digest("hex");
 
   console.log("🔍 Verify Debug:", { t, v1, hmac });
 
@@ -209,3 +209,4 @@ app.get("/order/:orderCode", async (req, res) => {
 server.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
+
