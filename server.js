@@ -8,7 +8,6 @@ import { Server } from "socket.io";
 import { google } from "googleapis";
 
 dotenv.config();
-
 const app = express();
 const server = createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
@@ -30,38 +29,39 @@ async function initSheets() {
   sheets = await initSheets();
   console.log("✅ Google Sheets ready");
 })();
-/**
- * Sắp xếp object theo key (đệ quy) theo alphabet A→Z
- */
-function sortObjDataByKey(data) {
-  if (data === null || typeof data !== "object") return data;
-  if (Array.isArray(data)) return data.map(sortObjDataByKey);
 
-  return Object.keys(data)
+// ===== Middleware =====
+app.use(cors());
+// lưu rawBody riêng cho webhook
+app.use(
+  "/casso-webhook",
+  express.json({ verify: (req, res, buf) => { req.rawBody = buf.toString("utf8"); } })
+);
+app.use(express.json()); // dùng cho API khác
+
+// ===== Helper: sort + ép string toàn bộ object =====
+function normalizeValues(obj) {
+  if (obj === null || obj === undefined) return "";
+  if (typeof obj !== "object") return String(obj);
+  if (Array.isArray(obj)) return obj.map(normalizeValues);
+
+  return Object.keys(obj)
     .sort()
     .reduce((acc, key) => {
-      acc[key] = sortObjDataByKey(data[key]);
+      acc[key] = normalizeValues(obj[key]);
       return acc;
     }, {});
 }
 
-/**
- * Hàm verify chữ ký Webhook V2 của Casso
- * @param {string} rawBody - chuỗi JSON gốc từ request (req.rawBody)
- * @param {string} signatureHeader - header X-Casso-Signature
- * @param {string} secret - Webhook Secret từ dashboard Casso
- * @returns {boolean} true nếu chữ ký hợp lệ
- */
+// ===== Verify chữ ký Webhook V2 =====
 function verifyCassoSignature(rawBody, signatureHeader, secret) {
   if (process.env.NODE_ENV === "development") return true;
   if (!signatureHeader || !secret) return false;
 
-  // Tách t và v1
   const match = signatureHeader.match(/t=(\d+),v1=([a-f0-9]+)/);
   if (!match) return false;
   const [, t, v1] = match;
 
-  // Parse rawBody để lấy data
   let body;
   try {
     body = JSON.parse(rawBody);
@@ -69,27 +69,19 @@ function verifyCassoSignature(rawBody, signatureHeader, secret) {
     console.error("❌ rawBody không phải JSON hợp lệ");
     return false;
   }
-  const dataObj = body.data || {};
-
-  // Sort key data và stringify
-  const sortedData = sortObjDataByKey(dataObj);
+  const sortedData = normalizeValues(body.data || {});
   const jsonSorted = JSON.stringify(sortedData);
 
-  // Tạo payload
   const messageToSign = `${t}.${jsonSorted}`;
-
-  // Hash HMAC-SHA512
   const hmac = crypto.createHmac("sha512", secret).update(messageToSign, "utf8").digest("hex");
 
   console.log("🔍 Verify Debug:", { t, v1, hmac, jsonSorted });
 
   return hmac === v1;
 }
-// ===== Middleware chung =====
-app.use(cors());
 
-// ===== API tạo đơn =====
-app.post("/create-order", express.json(), async (req, res) => {
+// ===== API tạo đơn (ghi Google Sheet) =====
+app.post("/create-order", async (req, res) => {
   try {
     const { uid, amount } = req.body;
     if (!uid || !amount) return res.status(400).json({ error: "Thiếu uid hoặc amount" });
@@ -134,6 +126,7 @@ app.post("/create-order", express.json(), async (req, res) => {
       requestBody: { values: [orderRow] },
     });
 
+    // Tạo QR
     const bankBin = process.env.RECEIVER_BANK_BIN;
     const accountNo = process.env.RECEIVER_ACCOUNT_NO;
     const accountName = process.env.RECEIVER_ACCOUNT_NAME;
@@ -148,85 +141,70 @@ app.post("/create-order", express.json(), async (req, res) => {
 });
 
 // ===== Webhook V2 =====
-app.post(
-  "/casso-webhook",
-  express.json({
-    verify: (req, res, buf) => {
-      req.rawBody = buf.toString("utf8");
+app.post("/casso-webhook", async (req, res) => {
+  try {
+    const signature = req.get("X-Casso-Signature") || "";
+    const ok = verifyCassoSignature(req.rawBody, signature, process.env.CASSO_SECRET);
+
+    if (!ok && process.env.NODE_ENV !== "development") {
+      console.warn("❌ Invalid Casso Signature");
+      return res.json({ success: true });
     }
-  }),
-  async (req, res) => {
-    try {
-      console.log("---- RAW BODY START ----");
-      console.log(req.rawBody);
-      console.log("---- RAW BODY END ----");
-      console.log("RAW LENGTH:", req.rawBody.length);
 
-      console.log("SECRET LEN:", (process.env.CASSO_SECRET || "").length);
+    const body = req.body;
+    if (body.error !== 0 || !body.data) return res.json({ success: true });
 
-      const signature = req.get("X-Casso-Signature") || "";
-      const ok = verifyCassoSignature(req.rawBody, signature, process.env.CASSO_SECRET);
+    const tx = body.data;
+    const desc = tx.description || "";
+    console.log("📩 Webhook transaction:", JSON.stringify(tx, null, 2));
 
-      if (!ok && process.env.NODE_ENV !== "development") {
-        console.warn("❌ Invalid Casso Signature");
-        return res.json({ success: true });
-      }
+    const match = desc.match(/MEOSTORE-?(\d+)/i);
+    if (!match) {
+      console.warn("⚠️ Không tìm thấy orderCode trong desc:", desc);
+      return res.json({ success: true });
+    }
 
-      const body = req.body;
-      if (body.error !== 0 || !body.data) return res.json({ success: true });
+    const orderCode = match[1];
+    const amount = Number(tx.amount) || 0;
+    const txId = String(tx.id ?? "");
 
-      const tx = body.data;
-      const desc = tx.description || "";
-      console.log("📩 Webhook transaction:", JSON.stringify(tx, null, 2));
+    const get = await sheets.spreadsheets.values.get({
+      spreadsheetId: process.env.SHEET_ID,
+      range: `${process.env.SHEET_NAME}!A2:M`,
+    });
+    const values = get.data.values || [];
+    const rowIndex = values.findIndex(r => String(r[0]).trim() === orderCode);
 
-      const match = desc.match(/MEOSTORE-?(\d+)/i);
-      if (!match) {
-        console.warn("⚠️ Không tìm thấy orderCode trong desc:", desc);
-        return res.json({ success: true });
-      }
-
-      const orderCode = match[1];
-      const amount = Number(tx.amount) || 0;
-      const txId = String(tx.id ?? "");
-
-      const get = await sheets.spreadsheets.values.get({
+    if (rowIndex !== -1) {
+      const rowNumber = rowIndex + 2;
+      await sheets.spreadsheets.values.update({
         spreadsheetId: process.env.SHEET_ID,
-        range: `${process.env.SHEET_NAME}!A2:M`,
+        range: `${process.env.SHEET_NAME}!K${rowNumber}:M${rowNumber}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [["Đã thanh toán", amount.toString(), txId]] },
       });
-      const values = get.data.values || [];
-      const rowIndex = values.findIndex(r => String(r[0]).trim() === orderCode);
 
-      if (rowIndex !== -1) {
-        const rowNumber = rowIndex + 2;
-        await sheets.spreadsheets.values.update({
-          spreadsheetId: process.env.SHEET_ID,
-          range: `${process.env.SHEET_NAME}!K${rowNumber}:M${rowNumber}`,
-          valueInputOption: "RAW",
-          requestBody: { values: [["Đã thanh toán", amount.toString(), txId]] },
-        });
+      console.log(`💰 Order ${orderCode} updated to PAID`);
 
-        console.log(`💰 Order ${orderCode} updated to PAID`);
-
-        io.emit("payment_success", {
-          orderCode: `MEOSTORE-${orderCode}`,
-          txId,
-          amount,
-          desc,
-        });
-      } else {
-        console.warn(`⚠️ Không tìm thấy đơn hàng ${orderCode} trong Sheet`);
-      }
-
-      res.json({ success: true });
-    } catch (err) {
-      console.error("❌ Webhook error:", err.stack);
-      res.json({ success: true });
+      io.emit("payment_success", {
+        orderCode: `MEOSTORE-${orderCode}`,
+        txId,
+        amount,
+        desc,
+      });
+    } else {
+      console.warn(`⚠️ Không tìm thấy đơn hàng ${orderCode} trong Sheet`);
     }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("❌ Webhook error:", err.stack);
+    res.json({ success: true });
   }
-);
+});
 
 // ===== Xem trạng thái đơn =====
-app.get("/order/:orderCode", express.json(), async (req, res) => {
+app.get("/order/:orderCode", async (req, res) => {
   try {
     const code = req.params.orderCode.replace("MEOSTORE-", "");
     const get = await sheets.spreadsheets.values.get({
@@ -248,7 +226,3 @@ app.get("/order/:orderCode", express.json(), async (req, res) => {
 server.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
-
-
-
-
