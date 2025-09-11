@@ -44,29 +44,37 @@ function verifyCassoSignature(rawBody, signatureHeader, secret) {
   const t = parts.t, v1 = parts.v1;
   if (!t || !v1) return false;
 
-  // thử cả 2 biến thể payload
-  const payloadDot = `${t}.${rawBody}`;
-  const payloadNoDot = `${t}${rawBody}`;
+  // các biến thể có thể có
+  const payloads = {
+    "t.rawBody (dấu chấm)": `${t}.${rawBody}`,
+    "t+rawBody (không chấm)": `${t}${rawBody}`,
+    "rawBody (không timestamp)": rawBody,
+    "rawBody+t": `${rawBody}${t}`,
+    "t (chỉ timestamp)": t
+  };
 
-  const hmacDot = crypto.createHmac("sha512", secret).update(payloadDot, "utf8").digest("hex");
-  const hmacNoDot = crypto.createHmac("sha512", secret).update(payloadNoDot, "utf8").digest("hex");
+  const hashes = {};
+  let match = false;
 
-  // 🔍 Debug log
+  for (const [name, payload] of Object.entries(payloads)) {
+    const h = crypto.createHmac("sha512", secret).update(payload, "utf8").digest("hex");
+    hashes[name] = h;
+    if (h === v1) {
+      console.log(`✅ Signature khớp với biến thể: ${name}`);
+      match = true;
+    }
+  }
+
   console.log("🔍 Verify Debug:", {
     t,
     v1,
     v1_len: v1.length,
-    hmacDot,
-    hmacNoDot,
-    secret_env_len: (process.env.CASSO_SECRET || "").length,
-    secret_env_preview:
-      (process.env.CASSO_SECRET || "").slice(0, 4) +
-      "..." +
-      (process.env.CASSO_SECRET || "").slice(-4),
+    secret_preview:
+      (secret || "").slice(0, 4) + "..." + (secret || "").slice(-4),
+    hashes
   });
 
-  // chấp nhận nếu match 1 trong 2
-  return v1 === hmacDot || v1 === hmacNoDot;
+  return match;
 }
 
 
@@ -233,5 +241,6 @@ app.get("/order/:orderCode", express.json(), async (req, res) => {
 server.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
+
 
 
