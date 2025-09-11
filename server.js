@@ -49,7 +49,14 @@ function verifyCassoSignature(rawBody, signatureHeader, secret) {
   const signedPayload = `${t}.${rawBody}`;
   const hmac = crypto.createHmac("sha512", secret).update(signedPayload).digest("hex");
 
-  console.log("🔍 Verify Debug:", { t, v1, hmac });
+  console.log("🔍 Verify Debug:", {
+    t,
+    v1,
+    v1_len: v1.length,
+    hmac,
+    hmac_len: hmac.length,
+    secret_len: secret.length,
+  });
 
   return hmac === v1;
 }
@@ -57,13 +64,12 @@ function verifyCassoSignature(rawBody, signatureHeader, secret) {
 // ===== Middleware chung =====
 app.use(cors());
 
-// ===== API tạo đơn (ghi vào Google Sheet) =====
+// ===== API tạo đơn =====
 app.post("/create-order", express.json(), async (req, res) => {
   try {
     const { uid, amount } = req.body;
     if (!uid || !amount) return res.status(400).json({ error: "Thiếu uid hoặc amount" });
 
-    // Lấy mã đơn mới
     const codeRes = await sheets.spreadsheets.values.get({
       spreadsheetId: process.env.SHEET_ID,
       range: `${process.env.SHEET_NAME}!A2:A`,
@@ -104,7 +110,6 @@ app.post("/create-order", express.json(), async (req, res) => {
       requestBody: { values: [orderRow] },
     });
 
-    // Tạo QR
     const bankBin = process.env.RECEIVER_BANK_BIN;
     const accountNo = process.env.RECEIVER_ACCOUNT_NO;
     const accountName = process.env.RECEIVER_ACCOUNT_NAME;
@@ -123,11 +128,18 @@ app.post(
   "/casso-webhook",
   express.json({
     verify: (req, res, buf) => {
-      req.rawBody = buf.toString("utf8"); // giữ nguyên body gốc
+      req.rawBody = buf.toString("utf8");
     }
   }),
   async (req, res) => {
     try {
+      console.log("---- RAW BODY START ----");
+      console.log(req.rawBody);
+      console.log("---- RAW BODY END ----");
+      console.log("RAW LENGTH:", req.rawBody.length);
+
+      console.log("SECRET LEN:", (process.env.CASSO_SECRET || "").length);
+
       const signature = req.get("X-Casso-Signature") || "";
       const ok = verifyCassoSignature(req.rawBody, signature, process.env.CASSO_SECRET);
 
