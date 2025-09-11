@@ -30,54 +30,61 @@ async function initSheets() {
   sheets = await initSheets();
   console.log("✅ Google Sheets ready");
 })();
+/**
+ * Sắp xếp object theo key (đệ quy) theo alphabet A→Z
+ */
+function sortObjDataByKey(data) {
+  if (data === null || typeof data !== "object") return data;
+  if (Array.isArray(data)) return data.map(sortObjDataByKey);
+
+  return Object.keys(data)
+    .sort()
+    .reduce((acc, key) => {
+      acc[key] = sortObjDataByKey(data[key]);
+      return acc;
+    }, {});
+}
+
+/**
+ * Hàm verify chữ ký Webhook V2 của Casso
+ * @param {string} rawBody - chuỗi JSON gốc từ request (req.rawBody)
+ * @param {string} signatureHeader - header X-Casso-Signature
+ * @param {string} secret - Webhook Secret từ dashboard Casso
+ * @returns {boolean} true nếu chữ ký hợp lệ
+ */
 function verifyCassoSignature(rawBody, signatureHeader, secret) {
   if (process.env.NODE_ENV === "development") return true;
   if (!signatureHeader || !secret) return false;
 
-  const parts = Object.fromEntries(
-    signatureHeader.split(",").map((seg) => {
-      const [k, v] = seg.split("=");
-      return [k.trim(), v.trim()];
-    })
-  );
+  // Tách t và v1
+  const match = signatureHeader.match(/t=(\d+),v1=([a-f0-9]+)/);
+  if (!match) return false;
+  const [, t, v1] = match;
 
-  const t = parts.t, v1 = parts.v1;
-  if (!t || !v1) return false;
-
-  // các biến thể có thể có
-  const payloads = {
-    "t.rawBody (dấu chấm)": `${t}.${rawBody}`,
-    "t+rawBody (không chấm)": `${t}${rawBody}`,
-    "rawBody (không timestamp)": rawBody,
-    "rawBody+t": `${rawBody}${t}`,
-    "t (chỉ timestamp)": t
-  };
-
-  const hashes = {};
-  let match = false;
-
-  for (const [name, payload] of Object.entries(payloads)) {
-    const h = crypto.createHmac("sha512", secret).update(payload, "utf8").digest("hex");
-    hashes[name] = h;
-    if (h === v1) {
-      console.log(`✅ Signature khớp với biến thể: ${name}`);
-      match = true;
-    }
+  // Parse rawBody để lấy data
+  let body;
+  try {
+    body = JSON.parse(rawBody);
+  } catch (e) {
+    console.error("❌ rawBody không phải JSON hợp lệ");
+    return false;
   }
+  const dataObj = body.data || {};
 
-  console.log("🔍 Verify Debug:", {
-    t,
-    v1,
-    v1_len: v1.length,
-    secret_preview:
-      (secret || "").slice(0, 4) + "..." + (secret || "").slice(-4),
-    hashes
-  });
+  // Sort key data và stringify
+  const sortedData = sortObjDataByKey(dataObj);
+  const jsonSorted = JSON.stringify(sortedData);
 
-  return match;
+  // Tạo payload
+  const messageToSign = `${t}.${jsonSorted}`;
+
+  // Hash HMAC-SHA512
+  const hmac = crypto.createHmac("sha512", secret).update(messageToSign, "utf8").digest("hex");
+
+  console.log("🔍 Verify Debug:", { t, v1, hmac, jsonSorted });
+
+  return hmac === v1;
 }
-
-
 // ===== Middleware chung =====
 app.use(cors());
 
@@ -241,6 +248,7 @@ app.get("/order/:orderCode", express.json(), async (req, res) => {
 server.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
+
 
 
 
