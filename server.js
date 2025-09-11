@@ -30,7 +30,6 @@ async function initSheets() {
   sheets = await initSheets();
   console.log("✅ Google Sheets ready");
 })();
-
 function verifyCassoSignature(rawBody, signatureHeader, secret) {
   if (process.env.NODE_ENV === "development") return true;
   if (!signatureHeader || !secret) return false;
@@ -45,23 +44,29 @@ function verifyCassoSignature(rawBody, signatureHeader, secret) {
   const t = parts.t, v1 = parts.v1;
   if (!t || !v1) return false;
 
-  const signedPayload = `${t}.${rawBody}`;
-  const hmac = crypto.createHmac("sha512", secret).update(signedPayload).digest("hex");
+  // thử cả 2 biến thể payload
+  const payloadDot = `${t}.${rawBody}`;
+  const payloadNoDot = `${t}${rawBody}`;
+
+  const hmacDot = crypto.createHmac("sha512", secret).update(payloadDot, "utf8").digest("hex");
+  const hmacNoDot = crypto.createHmac("sha512", secret).update(payloadNoDot, "utf8").digest("hex");
 
   // 🔍 Debug log
   console.log("🔍 Verify Debug:", {
     t,
     v1,
     v1_len: v1.length,
-    hmac,
-    hmac_len: hmac.length,
+    hmacDot,
+    hmacNoDot,
     secret_env_len: (process.env.CASSO_SECRET || "").length,
-    secret_env_preview: (process.env.CASSO_SECRET || "").slice(0, 4) + "..." + (process.env.CASSO_SECRET || "").slice(-4),
-    secret_used_len: secret.length,
-    secret_used_preview: secret.slice(0, 4) + "..." + secret.slice(-4),
+    secret_env_preview:
+      (process.env.CASSO_SECRET || "").slice(0, 4) +
+      "..." +
+      (process.env.CASSO_SECRET || "").slice(-4),
   });
 
-  return hmac === v1;
+  // chấp nhận nếu match 1 trong 2
+  return v1 === hmacDot || v1 === hmacNoDot;
 }
 
 
@@ -228,4 +233,5 @@ app.get("/order/:orderCode", express.json(), async (req, res) => {
 server.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
+
 
